@@ -20,7 +20,7 @@ use crossterm::{
 use ratatui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
@@ -669,10 +669,15 @@ fn run_ui_loop(
     let mut detail = false;
     let mut detail_scroll = 0;
     let mut benchmark_visible = true;
+    let mut horizontal_scroll = 0;
     let mut list_state = ListState::default();
     list_state.select((!results.is_empty()).then_some(selected));
 
     loop {
+        let benchmark_mode = results.iter().any(|result| result.benchmark.is_some());
+        let terminal_width = terminal.size()?.width;
+        let scroll_positions = main_table_scroll_positions(terminal_width, benchmark_mode);
+        let horizontal_scroll_max = scroll_positions.len().saturating_sub(1);
         terminal.draw(|frame| {
             if detail {
                 render_detail(
@@ -682,7 +687,7 @@ fn run_ui_loop(
                     benchmark_visible,
                 );
             } else {
-                render_results(frame, results, &mut list_state);
+                render_results(frame, results, &mut list_state, horizontal_scroll);
             }
         })?;
 
@@ -700,6 +705,8 @@ fn run_ui_loop(
             &mut detail,
             &mut detail_scroll,
             &mut benchmark_visible,
+            &mut horizontal_scroll,
+            horizontal_scroll_max,
         ) {
             break;
         }
@@ -715,6 +722,8 @@ fn handle_key(
     detail: &mut bool,
     detail_scroll: &mut u16,
     benchmark_visible: &mut bool,
+    horizontal_scroll: &mut usize,
+    horizontal_scroll_max: usize,
 ) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
@@ -733,6 +742,18 @@ fn handle_key(
             *benchmark_visible = !*benchmark_visible;
             *detail_scroll = 0;
         }
+        (KeyCode::Up, KeyModifiers::CONTROL) if !*detail && result_count > 0 => {
+            *selected = 0;
+        }
+        (KeyCode::Down, KeyModifiers::CONTROL) if !*detail && result_count > 0 => {
+            *selected = result_count - 1;
+        }
+        (KeyCode::Left, KeyModifiers::CONTROL) if !*detail => {
+            *horizontal_scroll = 0;
+        }
+        (KeyCode::Right, KeyModifiers::CONTROL) if !*detail => {
+            *horizontal_scroll = horizontal_scroll_max;
+        }
         (KeyCode::Up | KeyCode::Char('k'), _) if *detail => {
             *detail_scroll = detail_scroll.saturating_sub(1);
         }
@@ -740,14 +761,16 @@ fn handle_key(
             *detail_scroll = detail_scroll.saturating_add(1);
         }
         (KeyCode::Up | KeyCode::Char('k'), _) if result_count > 0 => {
-            *selected = if *selected == 0 {
-                result_count - 1
-            } else {
-                *selected - 1
-            };
+            *selected = selected.saturating_sub(1);
         }
         (KeyCode::Down | KeyCode::Char('j'), _) if result_count > 0 => {
-            *selected = (*selected + 1) % result_count;
+            *selected = (*selected + 1).min(result_count - 1);
+        }
+        (KeyCode::Left, _) if !*detail => {
+            *horizontal_scroll = horizontal_scroll.saturating_sub(1);
+        }
+        (KeyCode::Right, _) if !*detail => {
+            *horizontal_scroll = (*horizontal_scroll + 1).min(horizontal_scroll_max);
         }
         (KeyCode::Char('c'), KeyModifiers::CONTROL) => return true,
         _ => {}
@@ -759,6 +782,7 @@ fn render_results(
     frame: &mut ratatui::Frame<'_>,
     results: &[TestResult],
     list_state: &mut ListState,
+    horizontal_scroll: usize,
 ) {
     let area = frame.area();
     let benchmark_mode = results.iter().any(|result| result.benchmark.is_some());
@@ -799,17 +823,9 @@ fn render_results(
         Paragraph::new(stats_text).style(Style::default().fg(Color::Cyan)),
         sections[0],
     );
-    let header = if benchmark_mode {
-        format!(
-            "  {:<8}{:<42}{:<20}{:<22}{:<20}{:<20}",
-            "RESULT", "PATH", "INPUT WORD COUNT", "AVERAGE", "TOTAL", "P90"
-        )
-    } else {
-        format!(
-            "  {:<8}{:<42}{:<20}{:<14}",
-            "RESULT", "PATH", "INPUT WORD COUNT", "TIME"
-        )
-    };
+    let column_widths = main_table_column_widths(benchmark_mode);
+    let scroll_positions = main_table_scroll_positions(area.width, benchmark_mode);
+    let scroll_position = scroll_positions[horizontal_scroll.min(scroll_positions.len() - 1)];
     let items = results
         .iter()
         .map(|result| {
@@ -819,40 +835,80 @@ fn render_results(
                 Color::Red
             };
             let marker = if result.passed() { "PASS" } else { "FAIL" };
-            let mut line = vec![
-                Span::styled(
-                    format!("{marker:<4}    "),
-                    Style::default().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!("{:<40}", result.name)),
-                Span::raw("  "),
-                Span::raw(format!("{:<20}", format_word_count(result.input_words))),
-                Span::raw(format!(
-                    "{:<22}",
-                    if benchmark_mode {
-                        format_benchmark_duration(result.display_duration())
-                    } else {
-                        format_duration(result.display_duration())
-                    }
-                )),
-            ];
+            let mut line = vec![Span::styled(
+                format!("{:<10}", format!("{marker:<4}    ")),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            )];
+            line.push(Span::raw(format!(
+                "{:<42}",
+                fit_table_cell(&result.name, column_widths[1])
+            )));
+            line.push(Span::raw(format!(
+                "{:<20}",
+                format_word_count(result.input_words)
+            )));
+            line.push(Span::raw(format!(
+                "{:<22}",
+                if benchmark_mode {
+                    format_benchmark_duration(result.display_duration())
+                } else {
+                    format_duration(result.display_duration())
+                }
+            )));
             if let Some(benchmark) = &result.benchmark {
-                let total = format_benchmark_duration(benchmark.timing.total);
-                let p90 = format_benchmark_duration(benchmark.timing.p90);
                 line.push(Span::styled(
-                    format!("{:<20}", total),
+                    format!("{:<20}", format_benchmark_duration(benchmark.timing.total)),
                     Style::default().fg(Color::Rgb(255, 165, 0)),
                 ));
                 line.push(Span::styled(
-                    format!("{:<20}", p90),
+                    format!("{:<20}", format_benchmark_duration(benchmark.timing.p90)),
                     Style::default().fg(Color::Rgb(255, 165, 0)),
                 ));
             } else if benchmark_mode {
-                line.push(Span::raw("                                          "));
+                line.extend([
+                    Span::raw("                    "),
+                    Span::raw("                    "),
+                ]);
             }
-            ListItem::new(Line::from(line))
+            ListItem::new(crop_line(
+                Line::from(line),
+                scroll_position,
+                table_sections_width(area.width),
+            ))
         })
         .collect::<Vec<_>>();
+
+    let header_cells = if benchmark_mode {
+        [
+            "RESULT",
+            "PATH",
+            "INPUT WORD COUNT",
+            "AVERAGE",
+            "TOTAL",
+            "P90",
+        ]
+        .into_iter()
+        .collect::<Vec<_>>()
+    } else {
+        ["RESULT", "PATH", "INPUT WORD COUNT", "TIME"]
+            .into_iter()
+            .collect::<Vec<_>>()
+    };
+    let header = crop_line(
+        Line::from(
+            std::iter::once(Span::raw("  "))
+                .chain(
+                    header_cells
+                        .into_iter()
+                        .zip(column_widths.iter().copied())
+                        .map(|(cell, width)| Span::raw(format!("{cell:<width$}"))),
+                )
+                .collect::<Vec<_>>(),
+        )
+        .style(Style::default().add_modifier(Modifier::BOLD)),
+        scroll_position,
+        table_sections_width(area.width),
+    );
 
     let table_block = Block::default().borders(Borders::ALL).title(title);
     let table_inner = table_block.inner(sections[2]);
@@ -860,18 +916,111 @@ fn render_results(
         .direction(Direction::Vertical)
         .constraints([Constraint::Length(1), Constraint::Min(1)])
         .split(table_inner);
+    let has_left = scroll_position > 0;
+    let has_right =
+        scroll_position + table_sections_width(area.width) < main_table_width(benchmark_mode);
     frame.render_widget(table_block, sections[2]);
-    frame.render_widget(
-        Paragraph::new(header).style(Style::default().add_modifier(Modifier::BOLD)),
-        table_sections[0],
-    );
+    frame.render_widget(Paragraph::new(header), table_sections[0]);
+    let arrow_style = Style::default()
+        .fg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    if has_left {
+        frame.render_widget(
+            Paragraph::new("←").style(arrow_style),
+            Rect::new(table_sections[0].x, table_sections[0].y, 1, 1),
+        );
+    }
+    if has_right && table_sections[0].width > 1 {
+        frame.render_widget(
+            Paragraph::new("→").style(arrow_style),
+            Rect::new(
+                table_sections[0].x + table_sections[0].width - 1,
+                table_sections[0].y,
+                1,
+                1,
+            ),
+        );
+    }
     let list = List::new(items)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("> ");
     frame.render_stateful_widget(list, table_sections[1], list_state);
-    let footer = Paragraph::new("Up/Down or j/k: select   Enter: details   q/Esc: quit")
-        .style(Style::default().fg(Color::DarkGray));
+    let footer = Paragraph::new(
+        "←/→: scroll columns (Ctrl: first/last)   ↑/↓ or j/k: select (Ctrl: first/last)   Enter: details   q/Esc: quit",
+    )
+    .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, sections[3]);
+}
+
+fn main_table_column_widths(benchmark_mode: bool) -> Vec<usize> {
+    if benchmark_mode {
+        vec![10, 42, 20, 22, 20, 20]
+    } else {
+        vec![10, 42, 20, 22]
+    }
+}
+
+fn main_table_width(benchmark_mode: bool) -> usize {
+    main_table_column_widths(benchmark_mode).into_iter().sum()
+}
+
+fn table_sections_width(area_width: u16) -> usize {
+    area_width.saturating_sub(2) as usize
+}
+
+fn main_table_scroll_positions(area_width: u16, benchmark_mode: bool) -> Vec<usize> {
+    let viewport_width = table_sections_width(area_width);
+    let table_width = main_table_width(benchmark_mode);
+    let max_scroll = table_width.saturating_sub(viewport_width);
+    if max_scroll == 0 {
+        return vec![0];
+    }
+
+    let mut positions = vec![0];
+    let mut position = 0;
+    for width in main_table_column_widths(benchmark_mode) {
+        if position >= max_scroll {
+            break;
+        }
+        position += width;
+        if position < max_scroll {
+            positions.push(position);
+        }
+    }
+    if positions.last().copied() != Some(max_scroll) {
+        positions.push(max_scroll);
+    }
+    positions
+}
+
+fn fit_table_cell(value: &str, width: usize) -> String {
+    value.chars().take(width).collect()
+}
+
+fn crop_line(line: Line<'static>, offset: usize, width: usize) -> Line<'static> {
+    let mut remaining = width;
+    let mut skipped = offset;
+    let mut spans = Vec::new();
+    for span in line.spans {
+        if remaining == 0 {
+            break;
+        }
+        let content = span.content.into_owned();
+        let chars = content.chars().collect::<Vec<_>>();
+        if skipped >= chars.len() {
+            skipped -= chars.len();
+            continue;
+        }
+        let start = skipped;
+        skipped = 0;
+        let end = (start + remaining).min(chars.len());
+        spans.push(Span::styled(
+            chars[start..end].iter().collect::<String>(),
+            span.style,
+        ));
+        remaining -= end - start;
+    }
+    Line::from(spans)
 }
 
 fn render_detail(
@@ -1138,11 +1287,12 @@ mod tests {
     }
 
     #[test]
-    fn wraps_test_selection_in_both_directions() {
+    fn keeps_test_selection_within_both_edges() {
         let mut selected = 0;
         let mut detail = false;
         let mut scroll = 0;
         let mut benchmark_visible = true;
+        let mut horizontal_scroll = 0;
 
         handle_key(
             KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
@@ -1151,8 +1301,10 @@ mod tests {
             &mut detail,
             &mut scroll,
             &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
         );
-        assert_eq!(selected, 2);
+        assert_eq!(selected, 0);
 
         handle_key(
             KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
@@ -1161,8 +1313,142 @@ mod tests {
             &mut detail,
             &mut scroll,
             &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(selected, 1);
+    }
+
+    #[test]
+    fn moves_main_table_by_column_and_stops_at_the_edges() {
+        let mut selected = 0;
+        let mut detail = false;
+        let mut scroll = 0;
+        let mut benchmark_visible = true;
+        let mut horizontal_scroll = 0;
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            1,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 1);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            1,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 2);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            1,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 2);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            1,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 1);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            1,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 0);
+    }
+
+    #[test]
+    fn control_navigation_jumps_to_main_page_edges() {
+        let mut selected = 1;
+        let mut detail = false;
+        let mut scroll = 0;
+        let mut benchmark_visible = true;
+        let mut horizontal_scroll = 1;
+
+        handle_key(
+            KeyEvent::new(KeyCode::Up, KeyModifiers::CONTROL),
+            3,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
         );
         assert_eq!(selected, 0);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL),
+            3,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(selected, 2);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+            3,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 0);
+
+        handle_key(
+            KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL),
+            3,
+            &mut selected,
+            &mut detail,
+            &mut scroll,
+            &mut benchmark_visible,
+            &mut horizontal_scroll,
+            2,
+        );
+        assert_eq!(horizontal_scroll, 2);
+    }
+
+    #[test]
+    fn calculates_main_table_scroll_positions_from_column_boundaries() {
+        assert_eq!(main_table_scroll_positions(200, false), vec![0]);
+        assert_eq!(main_table_scroll_positions(40, false), vec![0, 10, 52, 56]);
     }
 
     #[test]
@@ -1171,6 +1457,7 @@ mod tests {
         let mut detail = true;
         let mut scroll = 4;
         let mut benchmark_visible = true;
+        let mut horizontal_scroll = 0;
 
         handle_key(
             KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
@@ -1179,6 +1466,8 @@ mod tests {
             &mut detail,
             &mut scroll,
             &mut benchmark_visible,
+            &mut horizontal_scroll,
+            0,
         );
 
         assert!(!benchmark_visible);
