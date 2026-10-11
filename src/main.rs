@@ -528,6 +528,14 @@ fn format_duration(duration: Duration) -> String {
     }
 }
 
+fn format_benchmark_duration(duration: Duration) -> String {
+    if duration < Duration::from_secs(1) {
+        format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
+    } else {
+        format!("{:.3}s", duration.as_secs_f64())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TimingStats {
     total: Duration,
@@ -580,11 +588,7 @@ fn benchmark_info(results: &[TestResult]) -> Option<(usize, usize)> {
 }
 
 fn format_benchmark_difference(duration: Duration) -> String {
-    if duration < Duration::from_secs(1) {
-        format!("{:.3}ms", duration.as_secs_f64() * 1000.0)
-    } else {
-        format!("{:.3}s", duration.as_secs_f64())
-    }
+    format_benchmark_duration(duration)
 }
 
 fn benchmark_difference(benchmark: &BenchmarkStats, index: usize) -> (String, Color) {
@@ -797,12 +801,12 @@ fn render_results(
     );
     let header = if benchmark_mode {
         format!(
-            "  {:<8}{:<42}{:<18}{:<20}{:<20}{:<20}",
-            "RESULT", "PATH", "INPUT WORD COUNT", "AVERAGE TIME", "TOTAL", "P90"
+            "  {:<8}{:<42}{:<20}{:<22}{:<20}{:<20}",
+            "RESULT", "PATH", "INPUT WORD COUNT", "AVERAGE", "TOTAL", "P90"
         )
     } else {
         format!(
-            "  {:<8}{:<42}{:<18}{:<12}",
+            "  {:<8}{:<42}{:<20}{:<14}",
             "RESULT", "PATH", "INPUT WORD COUNT", "TIME"
         )
     };
@@ -822,15 +826,19 @@ fn render_results(
                 ),
                 Span::raw(format!("{:<40}", result.name)),
                 Span::raw("  "),
-                Span::raw(format!("{:<18}", format_word_count(result.input_words))),
+                Span::raw(format!("{:<20}", format_word_count(result.input_words))),
                 Span::raw(format!(
-                    "{:<20}",
-                    format_duration(result.display_duration())
+                    "{:<22}",
+                    if benchmark_mode {
+                        format_benchmark_duration(result.display_duration())
+                    } else {
+                        format_duration(result.display_duration())
+                    }
                 )),
             ];
             if let Some(benchmark) = &result.benchmark {
-                let total = format_duration(benchmark.timing.total);
-                let p90 = format_duration(benchmark.timing.p90);
+                let total = format_benchmark_duration(benchmark.timing.total);
+                let p90 = format_benchmark_duration(benchmark.timing.p90);
                 line.push(Span::styled(
                     format!("{:<20}", total),
                     Style::default().fg(Color::Rgb(255, 165, 0)),
@@ -840,7 +848,7 @@ fn render_results(
                     Style::default().fg(Color::Rgb(255, 165, 0)),
                 ));
             } else if benchmark_mode {
-                line.push(Span::raw("                                        "));
+                line.push(Span::raw("                                          "));
             }
             ListItem::new(Line::from(line))
         })
@@ -1065,6 +1073,19 @@ mod tests {
         assert_eq!(format_duration(Duration::from_millis(42)), "42ms");
         assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
         assert_eq!(format_duration(Duration::from_secs(1)), "1.000s");
+    }
+
+    #[test]
+    fn formats_benchmark_milliseconds_with_three_decimal_places() {
+        assert_eq!(
+            format_benchmark_duration(Duration::from_micros(42_123)),
+            "42.123ms"
+        );
+        assert_eq!(
+            format_benchmark_duration(Duration::from_micros(999_999)),
+            "999.999ms"
+        );
+        assert_eq!(format_benchmark_duration(Duration::from_secs(1)), "1.000s");
     }
 
     #[test]
