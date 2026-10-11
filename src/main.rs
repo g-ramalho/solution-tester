@@ -125,6 +125,7 @@ impl Display for TestStatus {
 #[derive(Debug, Clone)]
 struct TestResult {
     name: String,
+    input_words: Option<usize>,
     status: TestStatus,
     duration: Duration,
     benchmark: Option<BenchmarkStats>,
@@ -285,8 +286,8 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
             );
         }
     };
-    let expected = match fs::read(expected_path) {
-        Ok(expected) => display_bytes(&expected),
+    let expected_bytes = match fs::read(expected_path) {
+        Ok(expected) => expected,
         Err(error) => {
             return failure_result(
                 name,
@@ -296,6 +297,8 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
             );
         }
     };
+    let input_words = Some(word_count(&input));
+    let expected = display_bytes(&expected_bytes);
 
     let mut child = match Command::new(executable)
         .stdin(Stdio::piped())
@@ -305,11 +308,12 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     {
         Ok(child) => child,
         Err(error) => {
-            return failure_result(
+            return failure_result_with_input_words(
                 name,
                 TestStatus::SpawnError,
                 started.elapsed(),
                 format!("could not start {}: {error}", executable.display()),
+                input_words,
             );
         }
     };
@@ -324,11 +328,12 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
         let _ = child.wait();
         let _ = join_reader(stdout_reader);
         let _ = join_reader(stderr_reader);
-        return failure_result(
+        return failure_result_with_input_words(
             name,
             TestStatus::WriteError,
             started.elapsed(),
             format!("could not write test input: {error}"),
+            input_words,
         );
     }
 
@@ -338,11 +343,12 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     let (actual_bytes, stderr_bytes) = match (actual_bytes, stderr_bytes) {
         (Ok(actual), Ok(stderr)) => (actual, stderr),
         (Err(error), _) | (_, Err(error)) => {
-            return failure_result(
+            return failure_result_with_input_words(
                 name,
                 TestStatus::ReadError,
                 started.elapsed(),
                 format!("could not read process output: {error}"),
+                input_words,
             );
         }
     };
@@ -353,6 +359,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if timed_out {
         return TestResult {
             name,
+            input_words,
             status: TestStatus::TimedOut,
             duration,
             benchmark: None,
@@ -372,6 +379,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if exit_code != Some(0) {
         return TestResult {
             name,
+            input_words,
             status: TestStatus::NonZeroExit,
             duration,
             benchmark: None,
@@ -386,6 +394,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if normalize_output(&actual) == normalize_output(&expected) {
         TestResult {
             name,
+            input_words,
             status: TestStatus::Passed,
             duration,
             benchmark: None,
@@ -398,6 +407,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     } else {
         TestResult {
             name,
+            input_words,
             status: TestStatus::OutputMismatch,
             duration,
             benchmark: None,
@@ -447,8 +457,19 @@ fn failure_result(
     duration: Duration,
     detail: impl Into<String>,
 ) -> TestResult {
+    failure_result_with_input_words(name, status, duration, detail, None)
+}
+
+fn failure_result_with_input_words(
+    name: String,
+    status: TestStatus,
+    duration: Duration,
+    detail: impl Into<String>,
+    input_words: Option<usize>,
+) -> TestResult {
     TestResult {
         name,
+        input_words,
         status,
         duration,
         benchmark: None,
@@ -462,6 +483,14 @@ fn failure_result(
 
 fn display_bytes(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn word_count(bytes: &[u8]) -> usize {
+    display_bytes(bytes).split_whitespace().count()
+}
+
+fn format_word_count(count: Option<usize>) -> String {
+    count.map_or_else(|| "-".to_owned(), |count| count.to_string())
 }
 
 fn normalize_output(output: &str) -> String {
@@ -768,11 +797,14 @@ fn render_results(
     );
     let header = if benchmark_mode {
         format!(
-            "  {:<8}{:<42}{:<20}{:<20}{:<20}",
-            "RESULT", "PATH", "AVERAGE TIME", "TOTAL", "P90"
+            "  {:<8}{:<42}{:<18}{:<20}{:<20}{:<20}",
+            "RESULT", "PATH", "INPUT WORD COUNT", "AVERAGE TIME", "TOTAL", "P90"
         )
     } else {
-        format!("  {:<8}{:<42}{:<12}", "RESULT", "PATH", "TIME")
+        format!(
+            "  {:<8}{:<42}{:<18}{:<12}",
+            "RESULT", "PATH", "INPUT WORD COUNT", "TIME"
+        )
     };
     let items = results
         .iter()
@@ -790,6 +822,7 @@ fn render_results(
                 ),
                 Span::raw(format!("{:<40}", result.name)),
                 Span::raw("  "),
+                Span::raw(format!("{:<18}", format_word_count(result.input_words))),
                 Span::raw(format!(
                     "{:<20}",
                     format_duration(result.display_duration())
@@ -807,7 +840,7 @@ fn render_results(
                     Style::default().fg(Color::Rgb(255, 165, 0)),
                 ));
             } else if benchmark_mode {
-                line.push(Span::raw("                          "));
+                line.push(Span::raw("                                        "));
             }
             ListItem::new(Line::from(line))
         })
@@ -1040,6 +1073,7 @@ mod tests {
             .into_iter()
             .map(|milliseconds| TestResult {
                 name: String::new(),
+                input_words: None,
                 status: TestStatus::Passed,
                 duration: Duration::from_millis(milliseconds),
                 benchmark: None,

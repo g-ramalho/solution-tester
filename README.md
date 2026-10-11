@@ -20,11 +20,12 @@ with `--timeout SECONDS`. Missing pair members, unreadable files, spawn errors,
 non-zero exits, timeouts, and wrong answers are shown as failed tests.
 
 After execution, the result list shows total runtime, average runtime, and the
-nearest-rank p90 runtime across all executed tests. Use Up/Down (or `j`/`k`) to
-select a result (selection wraps from the first result to the last and vice
-versa), Enter to view expected output, actual output, stderr, exit status, and
-timing, and `q` or Escape to quit. Results are green when passed and red when
-failed. The command exits with status 1 if any executed test failed.
+nearest-rank p90 runtime across all executed tests. The result list also shows
+the input word count for each test. Use Up/Down (or `j`/`k`) to select a result
+(selection wraps from the first result to the last and vice versa), Enter to
+view expected output, actual output, stderr, exit status, and timing, and `q` or
+Escape to quit. Results are green when passed and red when failed. The command
+exits with status 1 if any executed test failed.
 
 Use `--benchmark [RUNS]` to run each discovered test case multiple times
 (10 runs by default, minimum 2). In benchmark mode, the main page calculates
