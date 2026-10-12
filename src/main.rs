@@ -22,8 +22,9 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
+    symbols,
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, Wrap},
+    widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap},
 };
 use walkdir::WalkDir;
 
@@ -125,6 +126,7 @@ impl Display for TestStatus {
 #[derive(Debug, Clone)]
 struct TestResult {
     name: String,
+    input: String,
     input_words: Option<usize>,
     status: TestStatus,
     duration: Duration,
@@ -298,6 +300,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
         }
     };
     let input_words = Some(word_count(&input));
+    let input_display = display_bytes(&input);
     let expected = display_bytes(&expected_bytes);
 
     let mut child = match Command::new(executable)
@@ -359,6 +362,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if timed_out {
         return TestResult {
             name,
+            input: input_display,
             input_words,
             status: TestStatus::TimedOut,
             duration,
@@ -379,6 +383,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if exit_code != Some(0) {
         return TestResult {
             name,
+            input: input_display,
             input_words,
             status: TestStatus::NonZeroExit,
             duration,
@@ -394,6 +399,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     if normalize_output(&actual) == normalize_output(&expected) {
         TestResult {
             name,
+            input: input_display,
             input_words,
             status: TestStatus::Passed,
             duration,
@@ -407,6 +413,7 @@ fn run_test(executable: &Path, test: &TestCase, timeout: Duration) -> TestResult
     } else {
         TestResult {
             name,
+            input: input_display,
             input_words,
             status: TestStatus::OutputMismatch,
             duration,
@@ -469,6 +476,7 @@ fn failure_result_with_input_words(
 ) -> TestResult {
     TestResult {
         name,
+        input: String::new(),
         input_words,
         status,
         duration,
@@ -667,6 +675,7 @@ fn run_ui_loop(
 ) -> Result<()> {
     let mut selected = 0;
     let mut detail = false;
+    let mut detail_tab = DetailTab::Output;
     let mut detail_scroll = 0;
     let mut benchmark_visible = true;
     let mut horizontal_scroll = 0;
@@ -685,6 +694,7 @@ fn run_ui_loop(
                     results.get(selected),
                     detail_scroll,
                     benchmark_visible,
+                    detail_tab,
                 );
             } else {
                 render_results(frame, results, &mut list_state, horizontal_scroll);
@@ -698,12 +708,13 @@ fn run_ui_loop(
             continue;
         };
 
-        if handle_key(
+        if handle_key_with_tab(
             key,
             results.len(),
             &mut selected,
             &mut detail,
             &mut detail_scroll,
+            &mut detail_tab,
             &mut benchmark_visible,
             &mut horizontal_scroll,
             horizontal_scroll_max,
@@ -725,17 +736,56 @@ fn handle_key(
     horizontal_scroll: &mut usize,
     horizontal_scroll_max: usize,
 ) -> bool {
+    let mut detail_tab = DetailTab::Output;
+    handle_key_with_tab(
+        key,
+        result_count,
+        selected,
+        detail,
+        detail_scroll,
+        &mut detail_tab,
+        benchmark_visible,
+        horizontal_scroll,
+        horizontal_scroll_max,
+    )
+}
+
+fn handle_key_with_tab(
+    key: KeyEvent,
+    result_count: usize,
+    selected: &mut usize,
+    detail: &mut bool,
+    detail_scroll: &mut u16,
+    detail_tab: &mut DetailTab,
+    benchmark_visible: &mut bool,
+    horizontal_scroll: &mut usize,
+    horizontal_scroll_max: usize,
+) -> bool {
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Esc, _) => {
             if *detail {
                 *detail = false;
                 *detail_scroll = 0;
+                *detail_tab = DetailTab::Output;
             } else {
                 return true;
             }
         }
         (KeyCode::Enter, _) if result_count > 0 => {
             *detail = !*detail;
+            *detail_scroll = 0;
+            *detail_tab = DetailTab::Output;
+        }
+        (KeyCode::Tab, _) if *detail => {
+            *detail_tab = detail_tab.next();
+            *detail_scroll = 0;
+        }
+        (KeyCode::Left, _) if *detail => {
+            *detail_tab = DetailTab::Output;
+            *detail_scroll = 0;
+        }
+        (KeyCode::Right, _) if *detail => {
+            *detail_tab = DetailTab::Input;
             *detail_scroll = 0;
         }
         (KeyCode::Char('e'), _) if *detail => {
@@ -776,6 +826,21 @@ fn handle_key(
         _ => {}
     }
     false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DetailTab {
+    Output,
+    Input,
+}
+
+impl DetailTab {
+    fn next(self) -> Self {
+        match self {
+            Self::Output => Self::Input,
+            Self::Input => Self::Output,
+        }
+    }
 }
 
 fn render_results(
@@ -1028,6 +1093,7 @@ fn render_detail(
     result: Option<&TestResult>,
     scroll: u16,
     benchmark_visible: bool,
+    tab: DetailTab,
 ) {
     let area = frame.area();
     let Some(result) = result else {
@@ -1069,24 +1135,29 @@ fn render_detail(
         )),
         Line::from(format!("Detail: {}", result.detail)),
     ];
-    let mut output_lines = Vec::new();
-    output_lines.push(Line::from(Span::styled(
-        "Expected output:",
-        Style::default().add_modifier(Modifier::BOLD),
-    )));
-    append_output(&mut output_lines, &result.expected);
-    output_lines.push(Line::from(""));
-    output_lines.push(Line::from(Span::styled(
-        "Actual output:",
-        Style::default().add_modifier(Modifier::BOLD),
-    )));
-    append_output(&mut output_lines, &result.actual);
-    output_lines.push(Line::from(""));
-    output_lines.push(Line::from(Span::styled(
-        "Stderr:",
-        Style::default().add_modifier(Modifier::BOLD),
-    )));
-    append_output(&mut output_lines, &result.stderr);
+    let mut content_lines = Vec::new();
+    match tab {
+        DetailTab::Output => {
+            content_lines.push(Line::from(Span::styled(
+                "Expected output:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            append_output(&mut content_lines, &result.expected);
+            content_lines.push(Line::from(""));
+            content_lines.push(Line::from(Span::styled(
+                "Actual output:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            append_output(&mut content_lines, &result.actual);
+            content_lines.push(Line::from(""));
+            content_lines.push(Line::from(Span::styled(
+                "Stderr:",
+                Style::default().add_modifier(Modifier::BOLD),
+            )));
+            append_output(&mut content_lines, &result.stderr);
+        }
+        DetailTab::Input => append_output(&mut content_lines, &result.input),
+    }
 
     let table_height = result
         .benchmark
@@ -1117,7 +1188,7 @@ fn render_detail(
         Paragraph::new(Text::from(summary)).block(Block::default().borders(Borders::ALL)),
         sections[0],
     );
-    let output_index;
+    let content_index;
     if benchmark_visible {
         if let Some(benchmark) = &result.benchmark {
             let mut rows = benchmark
@@ -1172,27 +1243,44 @@ fn render_detail(
                     .title(format!(" Execution times ({} runs) ", benchmark.runs)),
             );
             frame.render_widget(table, sections[1]);
-            output_index = 2;
+            content_index = 2;
         } else {
-            output_index = 1;
+            content_index = 1;
         }
     } else {
-        output_index = 1;
+        content_index = 1;
     }
-    let detail = Paragraph::new(Text::from(output_lines))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(format!(" {} ", result.name)),
-        )
+    let content_area = sections[content_index];
+    let detail = Paragraph::new(Text::from(content_lines))
+        .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
-    frame.render_widget(detail, sections[output_index]);
+    frame.render_widget(detail, content_area);
+    let tabs = Tabs::new(vec!["Output", "Input"])
+        .select(if tab == DetailTab::Input { 1 } else { 0 })
+        .highlight_style(
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        )
+        .style(Style::default().fg(Color::White))
+        .divider(symbols::DOT)
+        .padding(" ", " ");
+    frame.render_widget(
+        tabs,
+        Rect::new(
+            content_area.x.saturating_add(1),
+            content_area.y,
+            content_area.width.saturating_sub(2),
+            1,
+        ),
+    );
     frame.render_widget(
         Paragraph::new(if result.benchmark.is_some() {
-            "Up/Down or j/k: scroll   e: show/hide benchmark   Enter/Esc/q: back"
+            "Up/Down or j/k: scroll   Tab/←/→: switch tab   e: show/hide benchmark   Enter/Esc/q: back"
         } else {
-            "Up/Down or j/k: scroll   Enter/Esc/q: back"
+            "Up/Down or j/k: scroll   Tab/←/→: switch tab   Enter/Esc/q: back"
         })
         .style(Style::default().fg(Color::DarkGray)),
         sections[sections.len() - 1],
@@ -1243,6 +1331,7 @@ mod tests {
             .into_iter()
             .map(|milliseconds| TestResult {
                 name: String::new(),
+                input: String::new(),
                 input_words: None,
                 status: TestStatus::Passed,
                 duration: Duration::from_millis(milliseconds),

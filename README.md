@@ -27,7 +27,9 @@ and Right to scroll the main table by column (`Ctrl` jumps to the first/last
 column); arrows at the table edges indicate when columns remain out of view.
 Use Up/Down or `j`/`k` to select a result (`Ctrl` jumps to the first/last test).
 Press Enter to view expected output, actual output, stderr, exit status, and
-timing, and `q` or Escape to quit. Results are green when passed and red when
+timing, and `q` or Escape to quit. The detail view opens on the `Output` tab;
+use `Tab`, Left, or Right to switch between `Output` and `Input`, where the
+test's `.in` contents are shown. Results are green when passed and red when
 failed. The command exits with status 1 if any executed test failed.
 
 Use `--benchmark [RUNS]` to run each discovered test case multiple times
