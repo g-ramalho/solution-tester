@@ -29,7 +29,12 @@ pub(crate) struct TimingStats {
 }
 
 pub(crate) fn timing_stats(results: &[TestResult]) -> Option<TimingStats> {
-    timing_stats_for_durations(results.iter().map(|result| result.duration))
+    timing_stats_for_durations(
+        results
+            .iter()
+            .filter(|result| !result.is_pending() && !result.is_skipped())
+            .map(|result| result.duration),
+    )
 }
 
 pub(crate) fn timing_stats_for_durations(

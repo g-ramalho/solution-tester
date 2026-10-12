@@ -1,8 +1,9 @@
 use crate::{
+    app::TestUpdate,
     benchmark::{benchmark_difference, benchmark_info, benchmark_timing_stats, timing_stats},
     benchmark::{format_benchmark_duration, format_duration},
     comparison::format_word_count,
-    domain::TestResult,
+    domain::{TestCase, TestResult},
 };
 use anyhow::{Context, Result};
 use crossterm::{
@@ -19,9 +20,13 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, List, ListItem, ListState, Paragraph, Row, Table, Tabs, Wrap},
 };
-use std::{io, time::Duration};
+use std::{io, sync::mpsc::Receiver, time::Duration};
 
-pub(crate) fn run_results_ui(results: &[TestResult]) -> Result<()> {
+pub(crate) fn run_results_ui(
+    tests: &[TestCase],
+    updates: Receiver<TestUpdate>,
+    benchmark_runs: Option<usize>,
+) -> Result<()> {
     enable_raw_mode().context("enable raw terminal mode")?;
     let mut stdout = io::stdout();
     if let Err(error) = execute!(stdout, EnterAlternateScreen) {
@@ -31,7 +36,7 @@ pub(crate) fn run_results_ui(results: &[TestResult]) -> Result<()> {
 
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).context("create terminal")?;
-    let ui_result = run_ui_loop(&mut terminal, results);
+    let ui_result = run_ui_loop(&mut terminal, tests, &updates, benchmark_runs);
     let disable_result = disable_raw_mode().context("restore terminal mode");
     let leave_result =
         execute!(terminal.backend_mut(), LeaveAlternateScreen).context("leave alternate screen");
@@ -45,8 +50,14 @@ pub(crate) fn run_results_ui(results: &[TestResult]) -> Result<()> {
 
 pub(crate) fn run_ui_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-    results: &[TestResult],
+    tests: &[TestCase],
+    updates: &Receiver<TestUpdate>,
+    benchmark_runs: Option<usize>,
 ) -> Result<()> {
+    let mut results = tests
+        .iter()
+        .map(|test| TestResult::pending(test.display_name()))
+        .collect::<Vec<_>>();
     let mut selected = 0;
     let mut detail = false;
     let mut detail_tab = DetailTab::Output;
@@ -57,7 +68,8 @@ pub(crate) fn run_ui_loop(
     list_state.select((!results.is_empty()).then_some(selected));
 
     loop {
-        let benchmark_mode = results.iter().any(|result| result.benchmark.is_some());
+        apply_updates(updates, &mut results);
+        let benchmark_mode = benchmark_runs.is_some();
         let terminal_width = terminal.size()?.width;
         let scroll_positions = main_table_scroll_positions(terminal_width, benchmark_mode);
         let horizontal_scroll_max = scroll_positions.len().saturating_sub(1);
@@ -71,7 +83,14 @@ pub(crate) fn run_ui_loop(
                     detail_tab,
                 );
             } else {
-                render_results(frame, results, &mut list_state, horizontal_scroll);
+                render_results(
+                    frame,
+                    &results,
+                    &mut list_state,
+                    horizontal_scroll,
+                    benchmark_mode,
+                    benchmark_runs,
+                );
             }
         })?;
 
@@ -95,9 +114,27 @@ pub(crate) fn run_ui_loop(
         ) {
             break;
         }
+
         list_state.select((!results.is_empty()).then_some(selected));
     }
     Ok(())
+}
+
+pub(crate) fn apply_updates(updates: &Receiver<TestUpdate>, results: &mut [TestResult]) {
+    for update in updates.try_iter() {
+        match update {
+            TestUpdate::Result { index, result } => {
+                if let Some(row) = results.get_mut(index) {
+                    *row = *result;
+                }
+            }
+            TestUpdate::Finished => {
+                for result in results.iter_mut().filter(|result| result.is_pending()) {
+                    *result = TestResult::skipped(result.name.clone());
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -223,9 +260,10 @@ pub(crate) fn render_results(
     results: &[TestResult],
     list_state: &mut ListState,
     horizontal_scroll: usize,
+    benchmark_mode: bool,
+    benchmark_runs: Option<usize>,
 ) {
     let area = frame.area();
-    let benchmark_mode = results.iter().any(|result| result.benchmark.is_some());
     let sections = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -235,9 +273,11 @@ pub(crate) fn render_results(
             Constraint::Length(1),
         ])
         .split(area);
+    let completed = results.iter().filter(|result| !result.is_pending()).count();
     let title = format!(
-        " Solution tester - {}/{} passed ",
+        " Solution tester - {}/{} passed ({completed}/{} complete) ",
         results.iter().filter(|result| result.passed()).count(),
+        results.len(),
         results.len()
     );
     let stats_text = match (
@@ -257,7 +297,10 @@ pub(crate) fn render_results(
             format_duration(stats.average),
             format_duration(stats.p90)
         ),
-        (_, None) => "No tests executed".to_owned(),
+        (_, None) => benchmark_runs.map_or_else(
+            || "No tests completed yet".to_owned(),
+            |runs| format!("Benchmark: {runs} runs/test   No tests completed yet"),
+        ),
     };
     frame.render_widget(
         Paragraph::new(stats_text).style(Style::default().fg(Color::Cyan)),
@@ -269,12 +312,15 @@ pub(crate) fn render_results(
     let items = results
         .iter()
         .map(|result| {
-            let color = if result.passed() {
-                Color::Green
+            let (color, marker) = if result.is_pending() {
+                (Color::Yellow, "WAIT")
+            } else if result.is_skipped() {
+                (Color::DarkGray, "SKIP")
+            } else if result.passed() {
+                (Color::Green, "PASS")
             } else {
-                Color::Red
+                (Color::Red, "FAIL")
             };
-            let marker = if result.passed() { "PASS" } else { "FAIL" };
             let mut line = vec![Span::styled(
                 format!("{:<10}", format!("{marker:<4}    ")),
                 Style::default().fg(color).add_modifier(Modifier::BOLD),
@@ -289,7 +335,9 @@ pub(crate) fn render_results(
             )));
             line.push(Span::raw(format!(
                 "{:<22}",
-                if benchmark_mode {
+                if result.is_pending() || result.is_skipped() {
+                    "-".to_owned()
+                } else if benchmark_mode {
                     format_benchmark_duration(result.display_duration())
                 } else {
                     format_duration(result.display_duration())
@@ -488,7 +536,11 @@ pub(crate) fn render_detail(
         return;
     };
 
-    let color = if result.passed() {
+    let color = if result.is_pending() {
+        Color::Yellow
+    } else if result.is_skipped() {
+        Color::DarkGray
+    } else if result.passed() {
         Color::Green
     } else {
         Color::Red

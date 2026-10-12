@@ -4,10 +4,10 @@ use crate::{
 use clap::Parser;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
-use std::fs;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
+use std::{fs, sync::mpsc};
 
 #[test]
 fn normalizes_trailing_whitespace_and_final_newline() {
@@ -68,6 +68,7 @@ fn calculates_total_average_and_nearest_rank_p90() {
 fn benchmark_argument_is_opt_in_and_requires_multiple_runs() {
     let normal = Cli::try_parse_from(["solution-tester", "solution", "tests"]).unwrap();
     assert_eq!(normal.benchmark, None);
+    assert!(normal.async_ui);
 
     let benchmark =
         Cli::try_parse_from(["solution-tester", "solution", "tests", "--benchmark", "3"]).unwrap();
@@ -80,6 +81,10 @@ fn benchmark_argument_is_opt_in_and_requires_multiple_runs() {
     assert!(
         Cli::try_parse_from(["solution-tester", "solution", "tests", "--benchmark", "1"]).is_err()
     );
+
+    let synchronous =
+        Cli::try_parse_from(["solution-tester", "solution", "tests", "--no-async-ui"]).unwrap();
+    assert!(!synchronous.async_ui);
 }
 
 #[test]
@@ -433,6 +438,72 @@ fn stops_on_failure_unless_keep_going_is_enabled() {
 
 #[cfg(unix)]
 #[test]
+fn publishes_each_completed_test_in_order() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("solution.sh");
+    fs::write(&executable, "#!/bin/sh\ncat\n").unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    for name in ["first", "second"] {
+        fs::write(directory.path().join(format!("{name}.in")), name).unwrap();
+        fs::write(directory.path().join(format!("{name}.sol")), name).unwrap();
+    }
+
+    let tests = discover_tests(directory.path()).unwrap();
+    let (updates, receiver) = mpsc::channel();
+    let results = run_tests_with_updates(
+        &executable,
+        &tests,
+        Duration::from_secs(1),
+        true,
+        None,
+        updates,
+    );
+    let published = receiver
+        .try_iter()
+        .filter_map(|update| match update {
+            TestUpdate::Result { index, result } => Some((index, *result)),
+            TestUpdate::Finished => None,
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(results.len(), 2);
+    assert_eq!(
+        published
+            .iter()
+            .map(|(index, _)| *index)
+            .collect::<Vec<_>>(),
+        vec![0, 1]
+    );
+    assert!(published.iter().all(|(_, result)| result.passed()));
+}
+
+#[test]
+fn resolves_pending_rows_when_execution_finishes() {
+    let (updates, receiver) = mpsc::channel();
+    let mut completed = TestResult::pending("first".to_owned());
+    completed.status = TestStatus::Passed;
+    updates
+        .send(TestUpdate::Result {
+            index: 0,
+            result: Box::new(completed),
+        })
+        .unwrap();
+    updates.send(TestUpdate::Finished).unwrap();
+
+    let mut results = vec![
+        TestResult::pending("first".to_owned()),
+        TestResult::pending("second".to_owned()),
+    ];
+    apply_updates(&receiver, &mut results);
+
+    assert_eq!(results[0].status, TestStatus::Passed);
+    assert_eq!(results[1].status, TestStatus::Skipped);
+}
+
+#[cfg(unix)]
+#[test]
 fn benchmarks_each_test_and_keeps_per_test_timing_stats() {
     let directory = tempfile::tempdir().unwrap();
     let executable = directory.path().join("solution.sh");
@@ -454,7 +525,15 @@ fn benchmarks_each_test_and_keeps_per_test_timing_stats() {
     fs::write(directory.path().join("case.sol"), b"hello").unwrap();
 
     let tests = discover_tests(directory.path()).unwrap();
-    let results = run_tests(&executable, &tests, Duration::from_secs(1), false, Some(3));
+    let (updates, receiver) = mpsc::channel();
+    let results = run_tests_with_updates(
+        &executable,
+        &tests,
+        Duration::from_secs(1),
+        false,
+        Some(3),
+        updates,
+    );
 
     assert_eq!(fs::read_to_string(counter).unwrap(), "3");
     assert_eq!(results.len(), 1);
@@ -463,4 +542,10 @@ fn benchmarks_each_test_and_keeps_per_test_timing_stats() {
     assert_eq!(benchmark.durations.len(), 3);
     assert!(results[0].passed());
     assert_eq!(benchmark_timing_stats(&results), Some(benchmark.timing));
+    let updates = receiver.try_iter().collect::<Vec<_>>();
+    assert!(matches!(updates.last(), Some(TestUpdate::Finished)));
+    assert!(matches!(
+        updates.first(),
+        Some(TestUpdate::Result { result, .. }) if result.benchmark.as_ref().is_some_and(|benchmark| benchmark.runs == 3)
+    ));
 }

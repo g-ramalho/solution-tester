@@ -15,6 +15,8 @@ impl TestCase {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TestStatus {
+    Pending,
+    Skipped,
     Passed,
     MissingInput,
     MissingExpected,
@@ -33,6 +35,8 @@ impl TestStatus {
 
     fn label(&self) -> &'static str {
         match self {
+            Self::Pending => "pending",
+            Self::Skipped => "not run",
             Self::Passed => "passed",
             Self::MissingInput => "missing input",
             Self::MissingExpected => "missing answer",
@@ -68,8 +72,48 @@ pub(crate) struct TestResult {
 }
 
 impl TestResult {
+    pub(crate) fn pending(name: String) -> Self {
+        Self {
+            name,
+            input: String::new(),
+            input_words: None,
+            status: TestStatus::Pending,
+            duration: Duration::ZERO,
+            benchmark: None,
+            expected: String::new(),
+            actual: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            detail: "test has not started".to_owned(),
+        }
+    }
+
+    pub(crate) fn skipped(name: String) -> Self {
+        Self {
+            name,
+            input: String::new(),
+            input_words: None,
+            status: TestStatus::Skipped,
+            duration: Duration::ZERO,
+            benchmark: None,
+            expected: String::new(),
+            actual: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            detail: "test was not run after an earlier failure".to_owned(),
+        }
+    }
+
     pub(crate) fn passed(&self) -> bool {
         self.status.is_passed()
+    }
+
+    pub(crate) fn is_pending(&self) -> bool {
+        matches!(self.status, TestStatus::Pending)
+    }
+
+    pub(crate) fn is_skipped(&self) -> bool {
+        matches!(self.status, TestStatus::Skipped)
     }
 
     pub(crate) fn display_duration(&self) -> Duration {

@@ -6,6 +6,7 @@ Run a compiled solution against recursively discovered test cases:
 cargo run -- path/to/solution path/to/tests
 cargo run -- path/to/solution path/to/tests --keep-going --timeout 10
 cargo run -- path/to/solution path/to/tests --keep-going --benchmark 10
+cargo run -- path/to/solution path/to/tests --no-async-ui
 ```
 
 Each test consists of a matching pair such as `cases/sample.in` and
@@ -19,9 +20,13 @@ all discovered pairs. Each test has a 5-second timeout by default; change it
 with `--timeout SECONDS`. Missing pair members, unreadable files, spawn errors,
 non-zero exits, timeouts, and wrong answers are shown as failed tests.
 
-After execution, the result list shows total runtime, average runtime, and the
-nearest-rank p90 runtime across all executed tests. The result list also shows
-the input word count for each test. Use Up/Down (or `j`/`k`) to select a result
+The result UI opens immediately and updates each row as its test completes.
+Tests still run sequentially in the background, and `--keep-going` retains its
+existing stop-after-failure behavior. Until a test completes, its row is shown
+as pending; tests skipped after an earlier failure are shown as not run. The
+result list shows total runtime, average runtime, and the
+nearest-rank p90 runtime across all executed tests. It also shows the input word
+count for each test. Use Up/Down (or `j`/`k`) to select a result
 (selection wraps from the first result to the last and vice versa). Use Left
 and Right to scroll the main table by column (`Ctrl` jumps to the first/last
 column); arrows at the table edges indicate when columns remain out of view.
@@ -43,3 +48,6 @@ difference from the previous run, colored green for a faster run and red for a
 slower run, followed by total, average, and nearest-rank p90 summary rows. The
 main page shows the same total, average, and p90 values beside each benchmark
 test's displayed runtime.
+
+Use `--no-async-ui` to restore the blocking behavior: all tests finish before
+the result UI opens.

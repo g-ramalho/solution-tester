@@ -29,6 +29,10 @@ pub(crate) struct Cli {
     #[arg(long)]
     pub(crate) keep_going: bool,
 
+    /// Wait for all tests to finish before opening the result UI.
+    #[arg(long = "no-async-ui", default_value_t = true, action = clap::ArgAction::SetFalse)]
+    pub(crate) async_ui: bool,
+
     /// Maximum runtime for each test, in seconds.
     #[arg(long, default_value_t = 5, value_parser = clap::value_parser!(u64).range(1..))]
     pub(crate) timeout: u64,
