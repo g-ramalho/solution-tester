@@ -1,5 +1,5 @@
 use crate::{
-    comparison::{display_bytes, mismatch_detail, normalize_output, word_count},
+    comparison::{display_bytes, display_trimmed, mismatch_detail, outputs_match, word_count},
     domain::{TestCase, TestResult, TestStatus},
 };
 use std::{
@@ -23,16 +23,16 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
             "no matching .in file",
         );
     };
-    let Some(expected_path) = &test.expected_path else {
+    let Some(solution_path) = &test.solution_path else {
         return failure_result(
             name,
-            TestStatus::MissingExpected,
+            TestStatus::MissingSolution,
             started.elapsed(),
             "no matching .sol file",
         );
     };
 
-    let input = match fs::read(input_path) {
+    let input_bytes = match fs::read(input_path) {
         Ok(input) => input,
         Err(error) => {
             return failure_result(
@@ -43,20 +43,20 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
             );
         }
     };
-    let expected_bytes = match fs::read(expected_path) {
-        Ok(expected) => expected,
+    let solution_bytes = match fs::read(solution_path) {
+        Ok(solution) => solution,
         Err(error) => {
             return failure_result(
                 name,
                 TestStatus::ReadError,
                 started.elapsed(),
-                format!("could not read {}: {error}", expected_path.display()),
+                format!("could not read {}: {error}", solution_path.display()),
             );
         }
     };
-    let input_words = Some(word_count(&input));
-    let input_display = display_bytes(&input);
-    let expected = display_bytes(&expected_bytes);
+    let input = display_trimmed(&input_bytes);
+    let solution = display_trimmed(&solution_bytes);
+    let input_words = Some(word_count(input));
 
     let mut child = match Command::new(executable)
         .stdin(Stdio::piped())
@@ -80,7 +80,7 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
     let stderr_reader = child.stderr.take().map(start_reader);
 
     if let Some(mut stdin) = child.stdin.take()
-        && let Err(error) = stdin.write_all(&input)
+        && let Err(error) = stdin.write_all(&input_bytes)
     {
         let _ = child.kill();
         let _ = child.wait();
@@ -110,21 +110,21 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
             );
         }
     };
-    let actual = display_bytes(&actual_bytes);
+    let actual = display_trimmed(&actual_bytes);
     let stderr = display_bytes(&stderr_bytes);
     let duration = started.elapsed();
 
     if timed_out {
         return TestResult {
             name,
-            input: input_display,
+            input: input.to_owned(),
             input_words,
             status: TestStatus::TimedOut,
             duration,
             benchmark: None,
-            expected,
-            actual,
-            stderr,
+            expected: solution.to_owned(),
+            actual: actual.to_owned(),
+            stderr: stderr.to_owned(),
             exit_code: None,
             detail: format!("process exceeded the {} second timeout", timeout.as_secs()),
         };
@@ -138,46 +138,46 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
     if exit_code != Some(0) {
         return TestResult {
             name,
-            input: input_display,
+            input: input.to_owned(),
             input_words,
             status: TestStatus::NonZeroExit,
             duration,
             benchmark: None,
-            expected,
-            actual,
-            stderr,
+            expected: solution.to_owned(),
+            actual: actual.to_owned(),
+            stderr: stderr.to_owned(),
             exit_code,
             detail: "the executable exited unsuccessfully".to_owned(),
         };
     }
 
-    if normalize_output(&actual) == normalize_output(&expected) {
+    if outputs_match(solution, actual) {
         TestResult {
             name,
-            input: input_display,
+            input: input.to_owned(),
             input_words,
             status: TestStatus::Passed,
             duration,
             benchmark: None,
-            expected,
-            actual,
-            stderr,
+            expected: solution.to_owned(),
+            actual: actual.to_owned(),
+            stderr: stderr.to_owned(),
             exit_code,
             detail: "output matches the expected answer".to_owned(),
         }
     } else {
         TestResult {
             name,
-            input: input_display,
+            input: input.to_owned(),
             input_words,
             status: TestStatus::OutputMismatch,
             duration,
             benchmark: None,
-            expected: expected.clone(),
-            actual: actual.clone(),
-            stderr,
+            expected: solution.to_owned(),
+            actual: actual.to_owned(),
+            stderr: stderr.to_owned(),
             exit_code,
-            detail: mismatch_detail(&expected, &actual),
+            detail: mismatch_detail(solution, actual),
         }
     }
 }

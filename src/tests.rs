@@ -15,6 +15,17 @@ fn normalizes_trailing_whitespace_and_final_newline() {
 }
 
 #[test]
+fn displays_trimmed_bytes_as_str() {
+    let bytes = b"  hello \n";
+    let displayed: &str = display_trimmed(bytes);
+
+    assert_eq!(displayed, "hello");
+    assert_eq!(word_count(displayed), 1);
+    assert!(outputs_match(" answer\n", "  answer  "));
+    assert!(!outputs_match("answer", "different"));
+}
+
+#[test]
 fn formats_short_durations_in_milliseconds() {
     assert_eq!(format_duration(Duration::from_millis(42)), "42ms");
     assert_eq!(format_duration(Duration::from_millis(999)), "999ms");
@@ -348,9 +359,9 @@ fn discovers_recursive_pairs_and_unmatched_files() {
             "root".to_owned()
         ]
     );
-    assert!(tests[0].expected_path.is_none());
+    assert!(tests[0].solution_path.is_none());
     assert!(tests[1].input_path.is_none());
-    assert!(tests[2].input_path.is_some() && tests[2].expected_path.is_some());
+    assert!(tests[2].input_path.is_some() && tests[2].solution_path.is_some());
 }
 
 #[cfg(unix)]
@@ -369,6 +380,27 @@ fn executes_a_solution_and_records_duration() {
     let result = run_test(&executable, &test, Duration::from_secs(1));
     assert!(result.passed());
     assert!(!result.duration.is_zero());
+}
+
+#[cfg(unix)]
+#[test]
+fn trims_input_and_solution_for_display_without_trimming_program_input() {
+    let directory = tempfile::tempdir().unwrap();
+    let executable = directory.path().join("solution.sh");
+    fs::write(&executable, "#!/bin/sh\ncat\n").unwrap();
+    let mut permissions = fs::metadata(&executable).unwrap().permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(&executable, permissions).unwrap();
+    fs::write(directory.path().join("case.in"), b"  hello  \n").unwrap();
+    fs::write(directory.path().join("case.sol"), b"\n  hello  \n").unwrap();
+
+    let test = discover_tests(directory.path()).unwrap().pop().unwrap();
+    let result = run_test(&executable, &test, Duration::from_secs(1));
+
+    assert!(result.passed());
+    assert_eq!(result.input, "hello");
+    assert_eq!(result.expected, "hello");
+    assert_eq!(result.actual, "  hello  \n");
 }
 
 #[cfg(unix)]

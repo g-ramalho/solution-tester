@@ -41,7 +41,7 @@ pub(crate) fn discover_tests(root: &Path) -> Result<Vec<TestCase>> {
         .map(|(key, (input_path, expected_path))| TestCase {
             key,
             input_path,
-            expected_path,
+            solution_path: expected_path,
         })
         .collect())
 }

@@ -4,7 +4,7 @@ use std::{fmt::Display, path::PathBuf, time::Duration};
 pub(crate) struct TestCase {
     pub(crate) key: PathBuf,
     pub(crate) input_path: Option<PathBuf>,
-    pub(crate) expected_path: Option<PathBuf>,
+    pub(crate) solution_path: Option<PathBuf>,
 }
 
 impl TestCase {
@@ -19,7 +19,7 @@ pub(crate) enum TestStatus {
     Skipped,
     Passed,
     MissingInput,
-    MissingExpected,
+    MissingSolution,
     ReadError,
     SpawnError,
     WriteError,
@@ -39,7 +39,7 @@ impl TestStatus {
             Self::Skipped => "not run",
             Self::Passed => "passed",
             Self::MissingInput => "missing input",
-            Self::MissingExpected => "missing answer",
+            Self::MissingSolution => "missing answer",
             Self::ReadError => "file read error",
             Self::SpawnError => "spawn error",
             Self::WriteError => "stdin write error",
