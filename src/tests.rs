@@ -17,11 +17,12 @@ fn normalizes_trailing_whitespace_and_final_newline() {
 #[test]
 fn displays_trimmed_bytes_as_str() {
     let bytes = b"  hello \n";
-    let displayed: &str = display_trimmed(bytes);
+    let binding = display_trimmed(bytes);
+let displayed: &str = binding.as_str();
 
-    assert_eq!(displayed, "hello");
+    assert_eq!(displayed, "  hello");
     assert_eq!(word_count(displayed), 1);
-    assert!(outputs_match(" answer\n", "  answer  "));
+    assert!(outputs_match("  answer\n", "  answer  "));
     assert!(!outputs_match("answer", "different"));
 }
 
@@ -391,16 +392,16 @@ fn trims_input_and_solution_for_display_without_trimming_program_input() {
     let mut permissions = fs::metadata(&executable).unwrap().permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(&executable, permissions).unwrap();
-    fs::write(directory.path().join("case.in"), b"  hello  \n").unwrap();
-    fs::write(directory.path().join("case.sol"), b"\n  hello  \n").unwrap();
+    fs::write(directory.path().join("case.in"), b"\n hello  \n").unwrap();
+    fs::write(directory.path().join("case.sol"), b"\n hello  \n").unwrap();
 
     let test = discover_tests(directory.path()).unwrap().pop().unwrap();
     let result = run_test(&executable, &test, Duration::from_secs(1));
 
     assert!(result.passed());
-    assert_eq!(result.input, "hello");
-    assert_eq!(result.expected, "hello");
-    assert_eq!(result.actual, "  hello  \n");
+    assert_eq!(result.input, "\n hello");
+    assert_eq!(result.expected, "\n hello");
+    assert_eq!(result.actual, "\n hello");
 }
 
 #[cfg(unix)]

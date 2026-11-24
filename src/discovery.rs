@@ -38,10 +38,10 @@ pub(crate) fn discover_tests(root: &Path) -> Result<Vec<TestCase>> {
 
     Ok(pairs
         .into_iter()
-        .map(|(key, (input_path, expected_path))| TestCase {
+        .map(|(key, (input_path, solution_path))| TestCase {
             key,
             input_path,
-            solution_path: expected_path,
+            solution_path,
         })
         .collect())
 }

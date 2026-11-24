@@ -4,8 +4,12 @@ pub(crate) fn display_bytes(bytes: &[u8]) -> &str {
     std::str::from_utf8(bytes).unwrap_or_default()
 }
 
-pub(crate) fn display_trimmed(bytes: &[u8]) -> &str {
-    display_bytes(bytes).trim()
+pub(crate) fn display_trimmed(bytes: &[u8]) -> String {
+    display_bytes(bytes)
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 pub(crate) fn word_count(text: &str) -> usize {
@@ -25,12 +29,12 @@ pub(crate) fn normalize_output(output: &str) -> String {
 }
 
 pub(crate) fn outputs_match(expected: &str, actual: &str) -> bool {
-    normalize_output(expected.trim()) == normalize_output(actual.trim())
+    normalize_output(expected) == normalize_output(actual)
 }
 
 pub(crate) fn mismatch_detail(expected: &str, actual: &str) -> String {
-    let normalized_expected = normalize_output(expected.trim());
-    let normalized_actual = normalize_output(actual.trim());
+    let normalized_expected = normalize_output(expected);
+    let normalized_actual = normalize_output(actual);
     let expected_lines: Vec<_> = normalized_expected.lines().collect();
     let actual_lines: Vec<_> = normalized_actual.lines().collect();
     let first_difference = (0..min(expected_lines.len(), actual_lines.len()))

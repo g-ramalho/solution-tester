@@ -56,7 +56,7 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
     };
     let input = display_trimmed(&input_bytes);
     let solution = display_trimmed(&solution_bytes);
-    let input_words = Some(word_count(input));
+    let input_words = Some(word_count(&input));
 
     let mut child = match Command::new(executable)
         .stdin(Stdio::piped())
@@ -151,7 +151,7 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
         };
     }
 
-    if outputs_match(solution, actual) {
+    if outputs_match(&solution, &actual) {
         TestResult {
             name,
             input: input.to_owned(),
@@ -177,7 +177,7 @@ pub(crate) fn run_test(executable: &Path, test: &TestCase, timeout: Duration) ->
             actual: actual.to_owned(),
             stderr: stderr.to_owned(),
             exit_code,
-            detail: mismatch_detail(solution, actual),
+            detail: mismatch_detail(&solution, &actual),
         }
     }
 }
